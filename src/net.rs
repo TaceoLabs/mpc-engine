@@ -295,7 +295,7 @@ impl TlsNetwork {
                 for (other_id, addr) in addrs.iter().enumerate() {
                     match id.cmp(&other_id) {
                         Ordering::Less => {
-                            let mut stream = loop {
+                            let stream = loop {
                                 if let Ok(stream) = TcpStream::connect(addr) {
                                     break stream;
                                 }
@@ -303,14 +303,14 @@ impl TlsNetwork {
                             };
                             stream.set_write_timeout(Some(TIMEOUT))?;
                             stream.set_nodelay(true)?;
+
+                            let name = ServerName::try_from(addr.hostname.clone())?.to_owned();
+                            let conn = ClientConnection::new(client_config.clone(), name.clone())?;
+                            let mut stream = StreamOwned::new(conn, stream);
+
                             stream.write_u64::<BigEndian>(i as u64)?;
                             stream.write_u64::<BigEndian>(id as u64)?;
                             stream.write_u8(s)?;
-
-                            let name = ServerName::try_from(addr.hostname.clone())?.to_owned();
-
-                            let conn = ClientConnection::new(client_config.clone(), name.clone())?;
-                            let stream = StreamOwned::new(conn, stream);
 
                             if s == STREAM_0 {
                                 nets[i]
@@ -323,15 +323,16 @@ impl TlsNetwork {
                             }
                         }
                         Ordering::Greater => {
-                            let (mut stream, _) = listener.accept()?;
+                            let (stream, _) = listener.accept()?;
                             stream.set_write_timeout(Some(TIMEOUT))?;
                             stream.set_nodelay(true)?;
+
+                            let conn = ServerConnection::new(server_config.clone())?;
+                            let mut stream = StreamOwned::new(conn, stream);
+
                             let i = stream.read_u64::<BigEndian>()? as usize;
                             let other_id = stream.read_u64::<BigEndian>()? as usize;
                             let s_ = stream.read_u8()?;
-
-                            let conn = ServerConnection::new(server_config.clone())?;
-                            let stream = StreamOwned::new(conn, stream);
 
                             if s_ == STREAM_0 {
                                 nets[i]
