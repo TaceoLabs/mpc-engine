@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::{net::Network, queue::NetworkQueue};
 
 pub const NUM_THREADS_NET: usize = 8;
-pub const NUM_THREADS_CPU: usize = 8;
+pub const NUM_THREADS_CPU: usize = 0;
 
 #[derive(Debug)]
 pub struct MpcEngine<N: Network> {
