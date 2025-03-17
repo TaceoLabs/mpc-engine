@@ -1,69 +1,76 @@
+use intmap::IntMap;
 use parking_lot::{Condvar, Mutex};
-use std::collections::VecDeque;
-use std::sync::atomic::AtomicUsize;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+#[derive(Debug)]
+enum Entry<T> {
+    Present(T),
+    Vacant(Arc<Condvar>),
+}
 
 #[derive(Debug)]
 pub struct NetworkQueue<T> {
-    size: usize,
-    // queue of (net_id, net) and queue of waker ids
-    pub queue: Mutex<(VecDeque<(usize, T)>, VecDeque<usize>)>,
-    pub buffer: Mutex<VecDeque<(usize, T)>>,
-    cv: Condvar,
-    cv_waker_id: AtomicUsize,
+    len: usize,
+    queue: Mutex<IntMap<usize, Entry<T>>>,
+    next_index: AtomicUsize,
 }
 
 impl<T> NetworkQueue<T> {
     pub fn new(items: Vec<T>) -> Self {
+        let mut queue = IntMap::new();
+        for (id, item) in items.into_iter().enumerate() {
+            queue.insert(id, Entry::Present(item));
+        }
         Self {
-            size: items.len(),
-            queue: Mutex::new((
-                VecDeque::from(items.into_iter().enumerate().collect::<Vec<_>>()),
-                VecDeque::new(),
-            )),
-            buffer: Mutex::new(VecDeque::new()),
-            cv: Condvar::new(),
-            cv_waker_id: AtomicUsize::default(),
+            len: queue.len(),
+            queue: Mutex::new(queue),
+            next_index: AtomicUsize::default(),
         }
     }
 
     pub fn pop(&self) -> (usize, T) {
         let mut queue = self.queue.lock();
-        // get shared increementing waker id to determine wake order
-        let id = self
-            .cv_waker_id
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        queue.1.push_back(id);
-        // if not empty and my id is next, continue
-        while queue.0.is_empty() || queue.1.front().unwrap() != &id {
-            tracing::warn!("wating for a free netwok, this should not happen!");
-            self.cv.wait(&mut queue);
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed) % self.len;
+
+        // check if vacant and clone cond var if it is
+        // we cant borrow the condvar entry and the queue while calling wait at the same time, instead we clone the arc
+        let cvar = if let Entry::Vacant(cvar) = queue.get(index).unwrap() {
+            Some(Arc::clone(cvar))
+        } else {
+            None
+        };
+
+        if let Some(cvar) = cvar {
+            cvar.wait(&mut queue);
         }
-        // remove waker id
-        queue.1.pop_front().unwrap();
-        // get item, unwrap because queue guaranteed not empty
-        queue.0.pop_front().unwrap()
+
+        // we got woken up, entry must be present now
+        // only main thread can call pop, so noo other thread can be here
+        // or even wait in the condvar above
+        if let Entry::Present(entry) = queue
+            .insert(index, Entry::Vacant(Arc::new(Condvar::new())))
+            .expect("must exist")
+        {
+            (index, entry)
+        } else {
+            panic!("got woken up but entry is vacant")
+        }
     }
 
     pub fn push(&self, index: usize, item: T) {
-        let mut buffer = self.buffer.lock();
-        buffer.push_back((index, item));
-        buffer.make_contiguous().sort_by_key(|&(i, _)| i);
-
         let mut queue = self.queue.lock();
-        while let Some(&(i, _)) = buffer.front() {
-            if queue.0.is_empty() && i == 0
-                || (!queue.0.is_empty()
-                    && ((i == 0 && queue.0.back().unwrap().0 == self.size - 1)
-                        || queue.0.back().unwrap().0 == i - 1))
-            {
-                let item = buffer.pop_front().unwrap();
-                queue.0.push_back(item);
-            } else {
-                break;
-            }
-        }
 
-        // notify all because we need to wake alll threads and let them check if they are next
-        self.cv.notify_all();
+        // add enrt back and notfiy main thread if it was wating on the condvar
+        if let Entry::Vacant(cvar) = queue
+            .insert(index, Entry::Present(item))
+            .expect("must exist")
+        {
+            cvar.notify_one();
+        } else {
+            panic!("entry was already present");
+        }
     }
 }
