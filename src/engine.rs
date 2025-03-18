@@ -18,6 +18,7 @@ impl<N: Network + Send + 'static> MpcEngine<N> {
     pub fn new(id: usize, num_threads_net: usize, num_threads_cpu: usize, nets: Vec<N>) -> Self {
         let net_pool = ThreadPoolBuilder::new()
             .num_threads(num_threads_net)
+            .use_current_thread()
             .build()
             .unwrap();
         let cpu_pool = ThreadPoolBuilder::new()
@@ -63,7 +64,6 @@ impl<N: Network + Send + 'static> MpcEngine<N> {
         Handle { sender: rx }
     }
 
-    // TODO use scope_in_place?
     pub fn install_net<T: Send>(&self, f: impl FnOnce(&N) -> T + Send) -> T {
         let (id, net) = self.queue.pop();
         self.net_pool.install(|| {
