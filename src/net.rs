@@ -107,7 +107,7 @@ pub trait Network: Send + Sync {
 pub struct TcpNetwork {
     id: usize,
     send: IntMap<usize, Mutex<TcpStream>>,
-    recv: IntMap<usize, Mutex<TcpStream>>,
+    recv: IntMap<usize, Mutex<mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl TcpNetwork {
@@ -146,7 +146,18 @@ impl TcpNetwork {
                         nets[i]
                             .send
                             .insert(other_id, Mutex::new(stream.try_clone().unwrap()));
-                        nets[i].recv.insert(other_id, Mutex::new(stream));
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            loop {
+                                let len = stream.read_u32::<BigEndian>()? as usize;
+                                let mut data = vec![0; len];
+                                stream.read_exact(&mut data)?;
+                                tx.send(data).unwrap();
+                            }
+                            #[allow(unreachable_code)]
+                            eyre::Ok(())
+                        });
+                        nets[i].recv.insert(other_id, Mutex::new(rx));
                     }
                     Ordering::Greater => {
                         let (mut stream, _) = listener.accept()?;
@@ -157,7 +168,18 @@ impl TcpNetwork {
                         nets[i]
                             .send
                             .insert(other_id, Mutex::new(stream.try_clone().unwrap()));
-                        nets[i].recv.insert(other_id, Mutex::new(stream));
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            loop {
+                                let len = stream.read_u32::<BigEndian>()? as usize;
+                                let mut data = vec![0; len];
+                                stream.read_exact(&mut data)?;
+                                tx.send(data).unwrap();
+                            }
+                            #[allow(unreachable_code)]
+                            eyre::Ok(())
+                        });
+                        nets[i].recv.insert(other_id, Mutex::new(rx));
                     }
                     Ordering::Equal => continue,
                 }
@@ -185,15 +207,12 @@ impl Network for TcpNetwork {
     }
 
     fn recv(&self, from: usize) -> eyre::Result<Vec<u8>> {
-        let mut stream = self
+        let queue = self
             .recv
             .get(from)
             .context("while get stream in recv")?
             .lock();
-        let len = stream.read_u32::<BigEndian>()? as usize;
-        let mut data = vec![0; len];
-        stream.read_exact(&mut data)?;
-        Ok(data)
+        Ok(queue.recv_timeout(TIMEOUT)?)
     }
 }
 
@@ -247,7 +266,7 @@ impl Write for TlsStream {
 pub struct TlsNetwork {
     id: usize,
     send: IntMap<usize, Mutex<TlsStream>>,
-    recv: IntMap<usize, Mutex<TlsStream>>,
+    recv: IntMap<usize, Mutex<mpsc::Receiver<Vec<u8>>>>,
 }
 
 impl TlsNetwork {
@@ -317,9 +336,18 @@ impl TlsNetwork {
                                     .send
                                     .insert(other_id, Mutex::new(TlsStream::Client(stream)));
                             } else {
-                                nets[i]
-                                    .recv
-                                    .insert(other_id, Mutex::new(TlsStream::Client(stream)));
+                                let (tx, rx) = mpsc::channel();
+                                std::thread::spawn(move || {
+                                    loop {
+                                        let len = stream.read_u32::<BigEndian>()? as usize;
+                                        let mut data = vec![0; len];
+                                        stream.read_exact(&mut data)?;
+                                        tx.send(data).unwrap();
+                                    }
+                                    #[allow(unreachable_code)]
+                                    eyre::Ok(())
+                                });
+                                nets[i].recv.insert(other_id, Mutex::new(rx));
                             }
                         }
                         Ordering::Greater => {
@@ -335,9 +363,18 @@ impl TlsNetwork {
                             let s_ = stream.read_u8()?;
 
                             if s_ == STREAM_0 {
-                                nets[i]
-                                    .recv
-                                    .insert(other_id, Mutex::new(TlsStream::Server(stream)));
+                                let (tx, rx) = mpsc::channel();
+                                std::thread::spawn(move || {
+                                    loop {
+                                        let len = stream.read_u32::<BigEndian>()? as usize;
+                                        let mut data = vec![0; len];
+                                        stream.read_exact(&mut data)?;
+                                        tx.send(data).unwrap();
+                                    }
+                                    #[allow(unreachable_code)]
+                                    eyre::Ok(())
+                                });
+                                nets[i].recv.insert(other_id, Mutex::new(rx));
                             } else {
                                 nets[i]
                                     .send
@@ -371,15 +408,12 @@ impl Network for TlsNetwork {
     }
 
     fn recv(&self, from: usize) -> eyre::Result<Vec<u8>> {
-        let mut stream = self
+        let queue = self
             .recv
             .get(from)
             .context("while get stream in recv")?
             .lock();
-        let len = stream.read_u32::<BigEndian>()? as usize;
-        let mut data = vec![0; len];
-        stream.read_exact(&mut data)?;
-        Ok(data)
+        Ok(queue.recv_timeout(TIMEOUT)?)
     }
 }
 
