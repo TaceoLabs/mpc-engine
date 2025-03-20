@@ -160,6 +160,74 @@ impl<N: Network + Send + 'static> MpcEngine<N> {
         (r0, r1, r2, r3, r4)
     }
 
+    pub fn join8_net<
+        R0: Send,
+        R1: Send,
+        R2: Send,
+        R3: Send,
+        R4: Send,
+        R5: Send,
+        R6: Send,
+        R7: Send,
+    >(
+        &self,
+        f0: impl FnOnce(&N) -> R0 + Send,
+        f1: impl FnOnce(&N) -> R1 + Send,
+        f2: impl FnOnce(&N) -> R2 + Send,
+        f3: impl FnOnce(&N) -> R3 + Send,
+        f4: impl FnOnce(&N) -> R4 + Send,
+        f5: impl FnOnce(&N) -> R5 + Send,
+        f6: impl FnOnce(&N) -> R6 + Send,
+        f7: impl FnOnce(&N) -> R7 + Send,
+    ) -> (R0, R1, R2, R3, R4, R5, R6, R7) {
+        let (id0, net0) = self.queue.pop();
+        let (id1, net1) = self.queue.pop();
+        let (id2, net2) = self.queue.pop();
+        let (id3, net3) = self.queue.pop();
+        let (id4, net4) = self.queue.pop();
+        let (id5, net5) = self.queue.pop();
+        let (id6, net6) = self.queue.pop();
+        let (id7, net7) = self.queue.pop();
+        let (r0, (r1, (r2, (r3, (r4, (r5, (r6, r7))))))) = self.net_pool.join(
+            || f0(&net0),
+            || {
+                rayon::join(
+                    || f1(&net1),
+                    || {
+                        rayon::join(
+                            || f2(&net2),
+                            || {
+                                rayon::join(
+                                    || f3(&net3),
+                                    || {
+                                        rayon::join(
+                                            || f4(&net4),
+                                            || {
+                                                rayon::join(
+                                                    || f5(&net5),
+                                                    || rayon::join(|| f6(&net6), || f7(&net7)),
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        );
+        self.queue.push(id0, net0);
+        self.queue.push(id1, net1);
+        self.queue.push(id2, net2);
+        self.queue.push(id3, net3);
+        self.queue.push(id4, net4);
+        self.queue.push(id5, net5);
+        self.queue.push(id6, net6);
+        self.queue.push(id7, net7);
+        (r0, r1, r2, r3, r4, r5, r6, r7)
+    }
+
     pub fn join_cpu<R0: Send, R1: Send>(
         &self,
         f0: impl FnOnce() -> R0 + Send,
