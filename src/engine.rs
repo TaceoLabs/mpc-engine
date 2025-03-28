@@ -37,6 +37,16 @@ impl<N: Network + Send + 'static> MpcEngine<N> {
         self.id
     }
 
+    pub fn get_net(&self) -> Option<NetworkGuard<N>> {
+        let net = self.queue.remove()?;
+        let queue = Arc::clone(&self.queue);
+        Some(NetworkGuard {
+            id: self.id,
+            net: Some(net),
+            queue,
+        })
+    }
+
     pub fn spawn_net<T: Send + 'static>(
         &self,
         f: impl FnOnce(&N) -> T + Send + 'static,
@@ -282,5 +292,32 @@ pub struct Handle<T> {
 impl<T> Handle<T> {
     pub fn join(self) -> T {
         self.sender.recv().unwrap()
+    }
+}
+
+#[derive(Debug)]
+pub struct NetworkGuard<T> {
+    id: usize,
+    net: Option<T>,
+    queue: Arc<NetworkQueue<T>>,
+}
+
+impl<T> Drop for NetworkGuard<T> {
+    fn drop(&mut self) {
+        self.queue.insert(self.net.take().expect("must be some"));
+    }
+}
+
+impl<T: Network> Network for NetworkGuard<T> {
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn send(&self, to: usize, data: &[u8]) -> eyre::Result<()> {
+        self.net.as_ref().expect("must be some").send(to, data)
+    }
+
+    fn recv(&self, from: usize) -> eyre::Result<Vec<u8>> {
+        self.net.as_ref().expect("must be some").recv(from)
     }
 }
